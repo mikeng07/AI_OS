@@ -36,6 +36,23 @@ class GameClient {
         };
         this.movementInterval = null;
         
+        // Animation system
+        this.animationTimer = 0;
+        this.lastFrameTime = 0;
+        
+        // Smooth movement interpolation
+        this.playerPositions = {}; // Stores interpolated positions
+        this.playerTargets = {};   // Stores target positions from server
+        
+        // UI state
+        this.showMinimap = true;
+        this.zoomLevel = 1.0;
+        this.cameraEasing = 0.1;
+        
+        // Audio context for sound effects
+        this.audioContext = null;
+        this.sounds = {};
+        
         // Initialize the game
         this.init();
     }
@@ -49,6 +66,15 @@ class GameClient {
         
         // Setup keyboard controls
         this.setupKeyboardControls();
+        
+        // Setup mouse controls
+        this.setupMouseControls();
+        
+        // Setup audio
+        this.setupAudio();
+        
+        // Start animation loop
+        this.startAnimationLoop();
         
         // Load the world map
         this.loadWorldMap();
@@ -84,7 +110,12 @@ class GameClient {
         this.worldImage.src = 'world.jpg';
     }
     
-    render() {
+    render(currentTime = 0) {
+        // Calculate delta time for smooth animations
+        const deltaTime = currentTime - this.lastFrameTime;
+        this.lastFrameTime = currentTime;
+        this.animationTimer += deltaTime;
+        
         // Clear the canvas
         this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
         
@@ -92,31 +123,61 @@ class GameClient {
             return;
         }
         
-        // Update camera to center on player
-        this.updateCamera();
+        // Update smooth player positions
+        this.updatePlayerInterpolation(deltaTime);
+        
+        // Update camera with smooth easing
+        this.updateCameraSmooth();
+        
+        // Apply zoom
+        this.ctx.save();
+        this.ctx.scale(this.zoomLevel, this.zoomLevel);
         
         // Draw the world map with camera offset
         this.drawWorldMap();
         
-        // Draw all players
+        // Draw visual effects (trails, particles)
+        this.drawVisualEffects();
+        
+        // Draw all players with smooth positions
         this.drawPlayers();
         
         // Draw username labels
         this.drawUsernames();
+        
+        this.ctx.restore();
+        
+        // Draw UI overlays (not affected by zoom)
+        this.drawUI();
+        
+        // Draw minimap
+        if (this.showMinimap) {
+            this.drawMinimap();
+        }
     }
     
-    updateCamera() {
+    updateCameraSmooth() {
         if (!this.myPlayer) {
             return;
         }
         
-        // Center camera on player position
-        this.camera.x = this.myPlayer.x - this.canvas.width / 2;
-        this.camera.y = this.myPlayer.y - this.canvas.height / 2;
+        // Get player's interpolated position
+        const playerPos = this.playerPositions[this.playerId] || this.myPlayer;
+        
+        // Target camera position (center on player)
+        const targetX = playerPos.x - (this.canvas.width / this.zoomLevel) / 2;
+        const targetY = playerPos.y - (this.canvas.height / this.zoomLevel) / 2;
+        
+        // Smooth camera easing
+        this.camera.x += (targetX - this.camera.x) * this.cameraEasing;
+        this.camera.y += (targetY - this.camera.y) * this.cameraEasing;
         
         // Clamp camera to world boundaries
-        this.camera.x = Math.max(0, Math.min(this.camera.x, this.worldWidth - this.canvas.width));
-        this.camera.y = Math.max(0, Math.min(this.camera.y, this.worldHeight - this.canvas.height));
+        const maxX = this.worldWidth - (this.canvas.width / this.zoomLevel);
+        const maxY = this.worldHeight - (this.canvas.height / this.zoomLevel);
+        
+        this.camera.x = Math.max(0, Math.min(this.camera.x, maxX));
+        this.camera.y = Math.max(0, Math.min(this.camera.y, maxY));
     }
     
     drawWorldMap() {
@@ -142,13 +203,17 @@ class GameClient {
     }
     
     drawPlayer(player) {
-        // Convert world coordinates to screen coordinates
-        const screenX = player.x - this.camera.x;
-        const screenY = player.y - this.camera.y;
+        // Use interpolated position if available
+        const playerPos = this.playerPositions[player.id] || player;
         
-        // Skip if player is outside visible area
-        if (screenX < -100 || screenX > this.canvas.width + 100 || 
-            screenY < -100 || screenY > this.canvas.height + 100) {
+        // Convert world coordinates to screen coordinates
+        const screenX = (playerPos.x - this.camera.x);
+        const screenY = (playerPos.y - this.camera.y);
+        
+        // Skip if player is outside visible area (with margin for zoom)
+        const margin = 200;
+        if (screenX < -margin || screenX > (this.canvas.width / this.zoomLevel) + margin || 
+            screenY < -margin || screenY > (this.canvas.height / this.zoomLevel) + margin) {
             return;
         }
         
@@ -163,9 +228,16 @@ class GameClient {
             return;
         }
         
-        // Get the correct direction and frame
+        // Calculate animation frame based on movement
         let direction = player.facing || 'south';
-        const animationFrame = player.animationFrame || 0;
+        let animationFrame = 0;
+        
+        if (player.isMoving) {
+            // Cycle through animation frames based on time
+            const frameSpeed = 200; // ms per frame
+            const numFrames = 3; // Most avatars have 3 frames per direction
+            animationFrame = Math.floor(this.animationTimer / frameSpeed) % numFrames;
+        }
         
         // Handle west direction by flipping east frames
         let flipHorizontal = false;
@@ -192,6 +264,22 @@ class GameClient {
             this.ctx.drawImage(avatarImg, -screenX - avatarImg.width/2, screenY - avatarImg.height/2);
         } else {
             this.ctx.drawImage(avatarImg, screenX - avatarImg.width/2, screenY - avatarImg.height/2);
+        }
+        
+        // Add glow effect for current player
+        if (player.id === this.playerId) {
+            this.ctx.shadowColor = '#ffff00';
+            this.ctx.shadowBlur = 10;
+            this.ctx.globalCompositeOperation = 'lighter';
+            
+            if (flipHorizontal) {
+                this.ctx.drawImage(avatarImg, -screenX - avatarImg.width/2, screenY - avatarImg.height/2);
+            } else {
+                this.ctx.drawImage(avatarImg, screenX - avatarImg.width/2, screenY - avatarImg.height/2);
+            }
+            
+            this.ctx.shadowBlur = 0;
+            this.ctx.globalCompositeOperation = 'source-over';
         }
         
         this.ctx.restore();
@@ -234,6 +322,7 @@ class GameClient {
         this.socket.onopen = () => {
             console.log('Connected to game server');
             this.isConnected = true;
+            this.playSound('connect');
             this.joinGame();
         };
         
@@ -340,12 +429,16 @@ class GameClient {
         if (message.avatar) {
             this.avatars[message.avatar.name] = message.avatar;
         }
+        this.playSound('join');
         this.render();
     }
     
     handlePlayerLeft(message) {
         console.log('Player left:', message.playerId);
         delete this.players[message.playerId];
+        delete this.playerPositions[message.playerId];
+        delete this.playerTargets[message.playerId];
+        this.playSound('leave');
         this.render();
     }
     
@@ -396,6 +489,33 @@ class GameClient {
         window.addEventListener('keyup', (event) => {
             this.handleKeyUp(event);
         });
+        
+        // Add keyboard shortcuts
+        window.addEventListener('keydown', (event) => {
+            this.handleKeyboardShortcuts(event);
+        });
+    }
+    
+    handleKeyboardShortcuts(event) {
+        switch (event.key.toLowerCase()) {
+            case 'm':
+                this.showMinimap = !this.showMinimap;
+                event.preventDefault();
+                break;
+            case 'r':
+                this.zoomLevel = 1.0;
+                event.preventDefault();
+                break;
+            case '+':
+            case '=':
+                this.zoomLevel = Math.min(this.zoomLevel + 0.2, 3.0);
+                event.preventDefault();
+                break;
+            case '-':
+                this.zoomLevel = Math.max(this.zoomLevel - 0.2, 0.5);
+                event.preventDefault();
+                break;
+        }
     }
     
     handleKeyDown(event) {
@@ -518,6 +638,244 @@ class GameClient {
         
         console.log('Sending stop command:', stopMessage);
         this.socket.send(JSON.stringify(stopMessage));
+    }
+    
+    // ===== NEW ENHANCED FEATURES =====
+    
+    setupMouseControls() {
+        // Click-to-move functionality
+        this.canvas.addEventListener('click', (event) => {
+            this.handleCanvasClick(event);
+        });
+        
+        // Zoom with mouse wheel
+        this.canvas.addEventListener('wheel', (event) => {
+            this.handleMouseWheel(event);
+        });
+    }
+    
+    handleCanvasClick(event) {
+        if (!this.isConnected || !this.myPlayer) {
+            return;
+        }
+        
+        const rect = this.canvas.getBoundingClientRect();
+        const clickX = event.clientX - rect.left;
+        const clickY = event.clientY - rect.top;
+        
+        // Convert screen coordinates to world coordinates
+        const worldX = (clickX / this.zoomLevel) + this.camera.x;
+        const worldY = (clickY / this.zoomLevel) + this.camera.y;
+        
+        // Clamp to world boundaries
+        const targetX = Math.max(0, Math.min(worldX, this.worldWidth));
+        const targetY = Math.max(0, Math.min(worldY, this.worldHeight));
+        
+        // Send click-to-move command
+        const moveMessage = {
+            action: 'move',
+            x: Math.floor(targetX),
+            y: Math.floor(targetY)
+        };
+        
+        console.log('Sending click-to-move command:', moveMessage);
+        this.socket.send(JSON.stringify(moveMessage));
+        
+        // Play movement sound
+        this.playSound('move');
+    }
+    
+    handleMouseWheel(event) {
+        event.preventDefault();
+        
+        const zoomSpeed = 0.1;
+        const minZoom = 0.5;
+        const maxZoom = 3.0;
+        
+        if (event.deltaY < 0) {
+            // Zoom in
+            this.zoomLevel = Math.min(this.zoomLevel + zoomSpeed, maxZoom);
+        } else {
+            // Zoom out
+            this.zoomLevel = Math.max(this.zoomLevel - zoomSpeed, minZoom);
+        }
+        
+        this.render();
+    }
+    
+    setupAudio() {
+        try {
+            this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            this.createSounds();
+        } catch (error) {
+            console.log('Audio not supported:', error);
+        }
+    }
+    
+    createSounds() {
+        // Create simple sound effects using Web Audio API
+        this.sounds.move = this.createTone(220, 0.1, 0.05); // Movement sound
+        this.sounds.connect = this.createTone(440, 0.2, 0.1); // Connection sound
+        this.sounds.join = this.createTone(330, 0.15, 0.08); // Player join sound
+        this.sounds.leave = this.createTone(165, 0.15, 0.08); // Player leave sound
+    }
+    
+    createTone(frequency, duration, volume) {
+        return () => {
+            if (!this.audioContext) return;
+            
+            const oscillator = this.audioContext.createOscillator();
+            const gainNode = this.audioContext.createGain();
+            
+            oscillator.connect(gainNode);
+            gainNode.connect(this.audioContext.destination);
+            
+            oscillator.frequency.value = frequency;
+            oscillator.type = 'sine';
+            
+            gainNode.gain.setValueAtTime(volume, this.audioContext.currentTime);
+            gainNode.gain.exponentialRampToValueAtTime(0.01, this.audioContext.currentTime + duration);
+            
+            oscillator.start(this.audioContext.currentTime);
+            oscillator.stop(this.audioContext.currentTime + duration);
+        };
+    }
+    
+    playSound(soundName) {
+        if (this.sounds[soundName]) {
+            this.sounds[soundName]();
+        }
+    }
+    
+    startAnimationLoop() {
+        const animate = (currentTime) => {
+            this.render(currentTime);
+            requestAnimationFrame(animate);
+        };
+        requestAnimationFrame(animate);
+    }
+    
+    updatePlayerInterpolation(deltaTime) {
+        // Smooth interpolation for player positions
+        for (const playerId in this.players) {
+            const player = this.players[playerId];
+            
+            if (!this.playerPositions[playerId]) {
+                this.playerPositions[playerId] = { x: player.x, y: player.y };
+                this.playerTargets[playerId] = { x: player.x, y: player.y };
+            }
+            
+            // Update target if server position changed
+            if (this.playerTargets[playerId].x !== player.x || this.playerTargets[playerId].y !== player.y) {
+                this.playerTargets[playerId] = { x: player.x, y: player.y };
+            }
+            
+            // Smooth interpolation
+            const current = this.playerPositions[playerId];
+            const target = this.playerTargets[playerId];
+            const lerpSpeed = 0.15;
+            
+            current.x += (target.x - current.x) * lerpSpeed;
+            current.y += (target.y - current.y) * lerpSpeed;
+        }
+    }
+    
+    drawVisualEffects() {
+        // Draw player trails
+        this.ctx.globalAlpha = 0.3;
+        for (const playerId in this.playerPositions) {
+            const pos = this.playerPositions[playerId];
+            const player = this.players[playerId];
+            
+            if (player && player.isMoving) {
+                const screenX = pos.x - this.camera.x;
+                const screenY = pos.y - this.camera.y;
+                
+                this.ctx.fillStyle = player.id === this.playerId ? '#ffff00' : '#00ffff';
+                this.ctx.beginPath();
+                this.ctx.arc(screenX, screenY, 8, 0, Math.PI * 2);
+                this.ctx.fill();
+            }
+        }
+        this.ctx.globalAlpha = 1.0;
+    }
+    
+    drawUI() {
+        // Status panel
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        this.ctx.fillRect(10, 10, 300, 100);
+        
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '14px Arial';
+        
+        const playerCount = Object.keys(this.players).length;
+        const myPos = this.myPlayer ? `(${Math.floor(this.myPlayer.x)}, ${Math.floor(this.myPlayer.y)})` : '(0, 0)';
+        const connectionStatus = this.isConnected ? 'Connected' : 'Disconnected';
+        const zoomText = `${Math.floor(this.zoomLevel * 100)}%`;
+        
+        this.ctx.fillText(`Status: ${connectionStatus}`, 20, 30);
+        this.ctx.fillText(`Players: ${playerCount}`, 20, 50);
+        this.ctx.fillText(`Position: ${myPos}`, 20, 70);
+        this.ctx.fillText(`Zoom: ${zoomText}`, 20, 90);
+        
+        // Controls hint
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        this.ctx.fillRect(10, this.canvas.height - 80, 350, 70);
+        
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = '12px Arial';
+        this.ctx.fillText('Controls: Arrow keys or click to move', 20, this.canvas.height - 60);
+        this.ctx.fillText('Mouse wheel: Zoom in/out', 20, this.canvas.height - 45);
+        this.ctx.fillText('M: Toggle minimap', 20, this.canvas.height - 30);
+        this.ctx.fillText('R: Reset zoom', 20, this.canvas.height - 15);
+    }
+    
+    drawMinimap() {
+        const minimapSize = 150;
+        const minimapX = this.canvas.width - minimapSize - 10;
+        const minimapY = 10;
+        
+        // Minimap background
+        this.ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+        this.ctx.fillRect(minimapX, minimapY, minimapSize, minimapSize);
+        
+        // Draw world map scaled down
+        if (this.worldImage) {
+            this.ctx.drawImage(
+                this.worldImage,
+                minimapX, minimapY,
+                minimapSize, minimapSize
+            );
+        }
+        
+        // Draw players on minimap
+        for (const playerId in this.players) {
+            const player = this.players[playerId];
+            const mapX = minimapX + (player.x / this.worldWidth) * minimapSize;
+            const mapY = minimapY + (player.y / this.worldHeight) * minimapSize;
+            
+            this.ctx.fillStyle = player.id === this.playerId ? '#ff0000' : '#00ff00';
+            this.ctx.beginPath();
+            this.ctx.arc(mapX, mapY, 3, 0, Math.PI * 2);
+            this.ctx.fill();
+        }
+        
+        // Draw camera view rectangle
+        if (this.myPlayer) {
+            const viewWidth = (this.canvas.width / this.zoomLevel) / this.worldWidth * minimapSize;
+            const viewHeight = (this.canvas.height / this.zoomLevel) / this.worldHeight * minimapSize;
+            const viewX = minimapX + (this.camera.x / this.worldWidth) * minimapSize;
+            const viewY = minimapY + (this.camera.y / this.worldHeight) * minimapSize;
+            
+            this.ctx.strokeStyle = '#ffffff';
+            this.ctx.lineWidth = 1;
+            this.ctx.strokeRect(viewX, viewY, viewWidth, viewHeight);
+        }
+        
+        // Minimap border
+        this.ctx.strokeStyle = '#ffffff';
+        this.ctx.lineWidth = 2;
+        this.ctx.strokeRect(minimapX, minimapY, minimapSize, minimapSize);
     }
 }
 
