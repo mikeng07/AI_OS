@@ -1,0 +1,27 @@
+/* Reset default browser styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+/* Full screen layout */
+html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden; /* Prevent scrollbars */
+}
+
+/* Canvas fills the entire browser window */
+#gameCanvas {
+    display: block;
+    width: 100vw;
+    height: 100vh;
+    background-color: #000; /* Black background while loading */
+    cursor: crosshair; /* Game-appropriate cursor */
+}
+
+/* Remove any potential scrollbars */
+body {
+    overflow: hidden;
+}
